@@ -1,0 +1,11 @@
+# Allinea le versioni a quelle dei worker in production (BOSS / qualify_master).
+# Se lì hai pinnato livekit-agents a una 1.6.x specifica, usa la stessa qui.
+livekit-agents>=1.6.1,<2.0
+livekit-plugins-deepgram
+livekit-plugins-openai
+livekit-plugins-anthropic
+livekit-plugins-inworld
+livekit-plugins-cartesia
+livekit-plugins-silero
+aiohttp
+python-dotenv
