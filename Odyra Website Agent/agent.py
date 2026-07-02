@@ -47,6 +47,7 @@ from livekit.agents import (
     BuiltinAudioClip,
     JobContext,
     JobProcess,
+    RoomOutputOptions,
     RunContext,
     WorkerOptions,
     cli,
@@ -97,6 +98,14 @@ KEYTERMS = [
     "zero", "uno", "due", "tre", "quattro", "cinque",
     "sei", "sette", "otto", "nove",
 ]
+
+# ───────────────────────── Avatar Tavus (step 5) ─────────────────────────
+# Attivo SOLO se tutte e tre le env sono presenti. Senza, il worker resta
+# voice-only con visualizer: nessun cambiamento di comportamento.
+
+TAVUS_REPLICA_ID = os.getenv("TAVUS_REPLICA_ID", "")
+TAVUS_PERSONA_ID = os.getenv("TAVUS_PERSONA_ID", "")
+AVATAR_ENABLED = bool(TAVUS_REPLICA_ID and TAVUS_PERSONA_ID and os.getenv("TAVUS_API_KEY"))
 
 # ───────────────────────── Webhook / RAG ─────────────────────────
 
@@ -595,14 +604,40 @@ async def entrypoint(ctx: JobContext) -> None:
                     return
             prev_user_speaking = user_speaking
 
-    await session.start(agent=agent, room=ctx.room)
+    # ── Avatar Tavus: si aggancia alla sessione e pubblica video+audio sincronizzati.
+    # L'audio della pipeline (voce Inworld) viene inoltrato a Tavus per il lip-sync,
+    # quindi l'output audio diretto della room va disabilitato (lo pubblica l'avatar).
+    avatar = None
+    if AVATAR_ENABLED:
+        try:
+            from livekit.plugins import tavus
+            avatar = tavus.AvatarSession(
+                replica_id=TAVUS_REPLICA_ID,
+                persona_id=TAVUS_PERSONA_ID,
+            )
+            await avatar.start(session, room=ctx.room)
+            logger.info("Avatar Tavus avviato (replica=%s)", TAVUS_REPLICA_ID)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Avatar Tavus non avviato (%s): proseguo voice-only", e)
+            avatar = None
 
-    # Musichetta "sto pensando" mentre girano i tool (soft, da ufficio, non hold music)
-    try:
-        background_audio = BackgroundAudioPlayer(thinking_sound=THINKING_SOUND)
-        await background_audio.start(room=ctx.room, agent_session=session)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("thinking sound non avviato: %s", e)
+    if avatar is not None:
+        await session.start(
+            agent=agent,
+            room=ctx.room,
+            room_output_options=RoomOutputOptions(audio_enabled=False),
+        )
+    else:
+        await session.start(agent=agent, room=ctx.room)
+
+    # Musichetta "sto pensando" solo in modalità voice-only: con l'avatar attivo
+    # l'audio esce dal participant Tavus e un secondo canale audio farebbe eco.
+    if avatar is None:
+        try:
+            background_audio = BackgroundAudioPlayer(thinking_sound=THINKING_SOUND)
+            await background_audio.start(room=ctx.room, agent_session=session)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("thinking sound non avviato: %s", e)
 
     # Attendi che il visitatore sia effettivamente in room prima di salutare
     try:
