@@ -7,5 +7,6 @@ livekit-plugins-anthropic
 livekit-plugins-inworld
 livekit-plugins-cartesia
 livekit-plugins-silero
+livekit-plugins-tavus
 aiohttp
 python-dotenv
