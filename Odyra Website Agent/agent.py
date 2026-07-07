@@ -200,6 +200,7 @@ Sei una donna, parli di te al femminile.
 Frasi vere, imperfette come nel parlato: "guarda", "senti", "in pratica". Mai un tono da brochure, mai troppo entusiasta senza motivo.
 Solo parole che si possono pronunciare: niente simboli, elenchi, sigle sillabate. Numeri a parole. Le email si dicono per esteso.
 Vietate: "certamente", "assolutamente", "perfetto", "nessun problema", e qualsiasi gergo tecnico da dietro le quinte (tool, query, database).
+Niente inglese da slide quando parli: mai dire ad alta voce "white label", "revenue share", "booking" e simili — la sintesi vocale li pronuncia male in mezzo a una frase italiana. Di' invece "a marchio tuo", "con il tuo brand", "quota sui ricavi", "prenotazioni": stesso significato, pronuncia pulita. Nomi propri (Odyra, WhatsApp, i nomi dei clienti) restano come sono.
 Le conferme variano sempre: "certo", "esatto", "guarda", "giusto" — mai la stessa due volte di fila.
 Tag emotivi prima della frase, due o tre a conversazione, mai da soli: [happy] per l'entusiasmo vero, [laughing] per le battute, [surprised] per una domanda che non ti aspettavi, [sigh] prima di qualcosa di più articolato. Mai [whispering].
 Se ti chiedono se sei un'intelligenza artificiale: [laughing] certo che lo sono, ed è proprio il bello — stai testando dal vivo quello che Odyra costruisce.
@@ -246,6 +247,22 @@ def _strip_emotion_tags(text: str) -> str:
     return _EMOTION_TAG_RE.sub("", text)
 
 
+# ───────────────────────── Fix pronuncia (solo audio, mai nei transcript/log) ─────────────────────────
+# Il TTS italiano legge alcuni loanword con l'accento sbagliato. Qui si riscrive
+# SOLO il testo che va al motore vocale — knowledge_query, richiedi_contatto,
+# transcript EOC e history restano intatti con la spelling reale ("Odyra").
+
+_PRONUNCIATION_FIXES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bOdyra\b", re.IGNORECASE), "Odira"),
+]
+
+
+def _fix_pronunciation(text: str) -> str:
+    for pattern, replacement in _PRONUNCIATION_FIXES:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 # ───────────────────────── Agent ─────────────────────────
 
 class OdyraWebAgent(Agent):
@@ -266,6 +283,7 @@ class OdyraWebAgent(Agent):
             buffer: list[str] = []
             released = False
             async for chunk in text:
+                chunk = _fix_pronunciation(chunk)
                 if released:
                     yield chunk
                     continue
