@@ -623,7 +623,8 @@ async def entrypoint(ctx: JobContext) -> None:
     # Lingua iniziale scelta dai bottoni IT/EN/ES del sito (passata dal widget nel
     # metadata del job). In assenza: DEFAULT_LANG. Poi lo STT-multi adatta da solo.
     initial_lang = _normalize_lang(md.get("lang", "")) or DEFAULT_LANG
-    logger.info("odyra_web job room=%s lang=%s", ctx.room.name, initial_lang)
+    logger.info("odyra_web job room=%s raw_metadata=%r lang=%s",
+                ctx.room.name, ctx.job.metadata, initial_lang)
 
     await ctx.connect()
 
@@ -712,6 +713,21 @@ async def entrypoint(ctx: JobContext) -> None:
         await _post_json(EOC_WEBHOOK_URL, payload)
 
     ctx.add_shutdown_callback(_send_eoc)
+
+    # ── Chiusura reale della stanza a fine sessione ──
+    # Distrugge la room lato server: sfratta anche il partecipante avatar (Tavus),
+    # così la conversazione non resta appesa e non satura il limite di conversazioni
+    # concorrenti. Senza questo, la room resta viva col solo avatar fino all'empty
+    # timeout e lo slot Tavus non si libera.
+    async def _delete_room(reason: str = "") -> None:
+        try:
+            from livekit import api
+            await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
+            logger.info("[CLOSE] room distrutta: %s", ctx.room.name)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete_room fallita (%s)", e)
+
+    ctx.add_shutdown_callback(_delete_room)
 
     # ── watchdog (pattern qualify_master, senza voicemail) ──
     async def _silence_watchdog() -> None:
