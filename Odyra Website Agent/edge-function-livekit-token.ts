@@ -49,6 +49,22 @@ Deno.serve(async (req) => {
   const apiSecret = Deno.env.get("LIVEKIT_API_SECRET")!;
   const livekitUrl = Deno.env.get("LIVEKIT_URL")!;
 
+  // Lingua scelta dai bottoni IT/EN/ES del sito: la passiamo all'agente nel
+  // metadata del job così il PRIMO saluto parte già nella lingua giusta.
+  // Accettata via query (?lang=es) o body JSON ({"lang":"es"}); default "it".
+  const ALLOWED_LANGS = ["it", "en", "es"];
+  let lang = "";
+  try {
+    lang = (new URL(req.url).searchParams.get("lang") || "").toLowerCase();
+    if (!lang && req.method === "POST") {
+      const body = await req.json().catch(() => ({}));
+      lang = String(body?.lang ?? "").toLowerCase();
+    }
+  } catch (_) {
+    // ignora: si ripiega su "it"
+  }
+  const agentLang = ALLOWED_LANGS.includes(lang) ? lang : "it";
+
   const room = `odyra-web-${crypto.randomUUID()}`;
   const identity = `visitor-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -62,7 +78,9 @@ Deno.serve(async (req) => {
     },
     // Dispatch esplicito dell'agente alla creazione della room:
     roomConfig: {
-      agents: [{ agentName: "odyra_web" }],
+      agents: [
+        { agentName: "odyra_web", metadata: JSON.stringify({ lang: agentLang }) },
+      ],
     },
     name: "Visitatore",
   })

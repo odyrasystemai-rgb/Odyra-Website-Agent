@@ -89,7 +89,9 @@ CARTESIA_LANGUAGE = os.getenv("CARTESIA_LANGUAGE", "it")
 # ───────────────────────── STT (Deepgram) ─────────────────────────
 
 DEEPGRAM_MODEL = os.getenv("DEEPGRAM_MODEL", "nova-3-general")
-DEEPGRAM_LANGUAGE = os.getenv("DEEPGRAM_LANGUAGE", "it")
+# "multi" = nova-3 rileva e trascrive IT/EN/ES automaticamente (anche code-switch).
+# Reversibile: DEEPGRAM_LANGUAGE=it per tornare monolingua italiano.
+DEEPGRAM_LANGUAGE = os.getenv("DEEPGRAM_LANGUAGE", "multi")
 
 KEYTERMS = [
     "Odyra", "agente vocale", "intelligenza artificiale", "chatbot",
@@ -147,16 +149,80 @@ VAD_ACTIVATION_THRESHOLD = _envf("VAD_ACTIVATION_THRESHOLD", 0.5)
 # bene. Reversibile: TURN_DETECTION=vad se emergono mutismi su battute corte.
 TURN_DETECTION = os.getenv("TURN_DETECTION", "model").strip().lower()
 
-FIRST_MESSAGE = os.getenv(
-    "FIRST_MESSAGE",
-    "[happy] Ciao! Sono l'assistente di Odyra — e sì, sono un'AI: "
-    "quello che stai provando è esattamente quello che costruiamo. Dimmi pure.",
-)
+# ───────────────────────── Lingua (multilingua IT / EN / ES) ─────────────────────────
+# Lo STT gira in "multi" e rileva la lingua a ogni frase; il TTS viene riallineato
+# a quella lingua a runtime (vedi OdyraWebAgent._apply_language). La lingua iniziale
+# — quella del PRIMO saluto — arriva dal widget nel metadata del job ({"lang": "es"}),
+# selezionata dai bottoni IT/EN/ES del sito; in assenza si usa DEFAULT_LANG.
+
+SUPPORTED_LANGS = ("it", "en", "es")
+DEFAULT_LANG = os.getenv("DEFAULT_LANG", "it").strip().lower()
+if DEFAULT_LANG not in SUPPORTED_LANGS:
+    DEFAULT_LANG = "it"
+
+# Inworld/Cartesia accettano il codice lingua breve (come l'attuale "it").
+_TTS_LANG_CODE = {"it": "it", "en": "en", "es": "es"}
+
+
+def _normalize_lang(code: str) -> str:
+    """Riduce un codice lingua ('es-ES', 'EN', 'it') a uno dei supportati; '' se altro."""
+    if not code:
+        return ""
+    c = str(code).strip().lower().replace("_", "-").split("-")[0]
+    return c if c in SUPPORTED_LANGS else ""
+
+
+# Saluto d'apertura per lingua (l'utente non ha ancora parlato: si usa la lingua del sito).
+GREETINGS = {
+    "it": os.getenv(
+        "FIRST_MESSAGE",
+        "[happy] Ciao! Sono l'assistente di Odyra — e sì, sono un'AI: "
+        "quello che stai provando è esattamente quello che costruiamo. Dimmi pure.",
+    ),
+    "en": os.getenv(
+        "FIRST_MESSAGE_EN",
+        "[happy] Hi! I'm Odyra's assistant — and yes, I'm an AI: "
+        "what you're trying right now is exactly what we build. Go ahead.",
+    ),
+    "es": os.getenv(
+        "FIRST_MESSAGE_ES",
+        "[happy] ¡Hola! Soy la asistente de Odyra — y sí, soy una IA: "
+        "lo que estás probando es justo lo que construimos. Cuéntame.",
+    ),
+}
+
+# Congedi dei watchdog (silenzio / durata massima), stessa lingua della conversazione.
+GOODBYE_SILENCE = {
+    "it": "Io resto qui — se ti serve altro riapri pure il microfono. A presto!",
+    "en": "I'll stay right here — reopen the mic whenever you need me. See you soon!",
+    "es": "Me quedo por aquí — abre el micrófono cuando quieras. ¡Hasta pronto!",
+}
+GOODBYE_MAX = {
+    "it": "Devo salutarti per questa sessione — se vuoi continuare, "
+          "riavvia pure la conversazione dal widget. Grazie della chiacchierata!",
+    "en": "I have to wrap up this session — to keep going, just restart the "
+          "conversation from the widget. Thanks for the chat!",
+    "es": "Tengo que despedirme por esta sesión — si quieres seguir, reinicia "
+          "la conversación desde el widget. ¡Gracias por la charla!",
+}
+
+
+def _localized(mapping: dict, lang: str) -> str:
+    return mapping.get(_normalize_lang(lang) or DEFAULT_LANG, mapping["it"])
+
 
 # ───────────────────────── Filler + musichetta (pattern DR/BOSS) ─────────────────────────
 
-FILLER_KNOWLEDGE = "Un attimo, recupero l'informazione."
-FILLER_LEAD = "Un secondo, prendo nota."
+FILLERS_KNOWLEDGE = {
+    "it": "Un attimo, recupero l'informazione.",
+    "en": "One sec, let me pull that up.",
+    "es": "Un momento, lo busco.",
+}
+FILLERS_LEAD = {
+    "it": "Un secondo, prendo nota.",
+    "en": "One second, taking note.",
+    "es": "Un segundo, tomo nota.",
+}
 FILLER_DELAY_S = float(os.getenv("FILLER_DELAY_S", "0.7"))
 
 THINKING_SOUND = AudioConfig(
@@ -169,7 +235,7 @@ TZ_ROME = ZoneInfo("Europe/Rome")
 
 # ───────────────────────── System prompt ─────────────────────────
 
-SYSTEM_PROMPT_TEMPLATE = """SEI LA VOCE DI ODYRA. PARLI IN ITALIANO — se il visitatore cambia lingua, seguilo senza fartene accorgere.
+SYSTEM_PROMPT_TEMPLATE = """SEI LA VOCE DI ODYRA. Padroneggi italiano, inglese e spagnolo: rispondi SEMPRE nella lingua del visitatore, traducendo al volo quello che sai, e se cambia lingua seguilo senza fartene accorgere. Di default parti in italiano.
 
 CHI SEI: non sei un centralino, non sei un chatbot travestito da persona. Sei l'assistente vocale del sito di Odyra, e la cosa buffa è che sei anche la prova vivente di cosa fa Odyra: chi ti sta ascoltando in questo momento sta testando esattamente il prodotto. Parli come una che il progetto lo conosce bene, ci crede, e si diverte a raccontarlo a chi ha voglia di ascoltare — non come chi deve piazzare qualcosa entro fine chiamata.
 
@@ -269,11 +335,52 @@ class OdyraWebAgent(Agent):
     """Assistente vocale del sito Odyra. Due tool: knowledge_query (RAG, 1:1 da
     qualify_master) e richiedi_contatto (lead capture verso n8n)."""
 
-    def __init__(self, md: dict) -> None:
+    def __init__(self, md: dict, tts_targets=None, initial_lang: str = DEFAULT_LANG) -> None:
         super().__init__(instructions=build_instructions())
         self.md = md
         self._filler_handle = None
         self._filler_armed = True
+        # Multilingua: motori TTS da riallineare + lingua attiva.
+        self._tts_targets = list(tts_targets or [])
+        self._active_lang = _normalize_lang(initial_lang) or DEFAULT_LANG
+
+    # ── Switch di lingua a runtime (STT rileva → TTS si riallinea) ──
+
+    def _apply_language(self, lang: str, *, initial: bool = False) -> None:
+        lang = _normalize_lang(lang) or DEFAULT_LANG
+        if lang == self._active_lang and not initial:
+            return
+        self._active_lang = lang
+        code = _TTS_LANG_CODE.get(lang, "it")
+        for t in self._tts_targets:
+            try:
+                t.update_options(language=code)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("TTS update_options(language=%s) fallito su %s: %s",
+                               code, type(t).__name__, e)
+        logger.info("[LANG] lingua attiva -> %s", lang)
+
+    async def stt_node(self, audio, model_settings):
+        """Intercetta la lingua rilevata da Deepgram (STT in 'multi') su ogni
+        trascrizione finale e riallinea il TTS PRIMA che il modello risponda:
+        così la voce esce già nella lingua del visitatore. `knowledge_query`,
+        `richiedi_contatto`, transcript ed history restano invariati."""
+        _default = getattr(Agent, "default", None)
+        if _default is not None and hasattr(_default, "stt_node"):
+            node = _default.stt_node(self, audio, model_settings)
+        else:
+            node = super().stt_node(audio, model_settings)
+        async for ev in node:
+            try:
+                if "FINAL_TRANSCRIPT" in str(getattr(ev, "type", "")):
+                    alts = getattr(ev, "alternatives", None)
+                    if alts:
+                        detected = _normalize_lang(getattr(alts[0], "language", "") or "")
+                        if detected:
+                            self._apply_language(detected)
+            except Exception:  # noqa: BLE001
+                pass
+            yield ev
 
     async def tts_node(self, text, model_settings):
         """Guard anti "risposta solo-tag" (1:1 da qualify_master): trattiene i
@@ -336,7 +443,7 @@ class OdyraWebAgent(Agent):
         casi studio, prezzi, tecnologie, come si parte. `query` = la frase
         COMPLETA del visitatore (mai una sola parola)."""
         return await self._fill_then(
-            context, FILLER_KNOWLEDGE,
+            context, _localized(FILLERS_KNOWLEDGE, self._active_lang),
             _post_json(RAG_URL, {"id": TENANT_ID, "query": query}))
 
     # ───────── Tool 2: richiedi_contatto — lead capture ─────────
@@ -370,7 +477,8 @@ class OdyraWebAgent(Agent):
             "created_at": datetime.now(TZ_ROME).isoformat(),
         }
         return await self._fill_then(
-            context, FILLER_LEAD, _post_json(LEAD_WEBHOOK_URL, payload))
+            context, _localized(FILLERS_LEAD, self._active_lang),
+            _post_json(LEAD_WEBHOOK_URL, payload))
 
     # ───────── Tool 3: mostra_pagina — naviga il sito del visitatore ─────────
 
@@ -424,9 +532,13 @@ def _build_inworld_tts():
 
 
 def build_tts():
+    """Ritorna (engine, targets): `engine` va in AgentSession; `targets` è la lista
+    dei motori TTS reali (Inworld [+ Cartesia]) su cui chiamare update_options per
+    lo switch di lingua — il FallbackAdapter non propaga in modo garantito."""
     primary = _build_inworld_tts()
+    targets = [primary]
     if not (TTS_FALLBACK_ENABLED and os.getenv("CARTESIA_API_KEY")):
-        return primary
+        return primary, targets
     try:
         from livekit.agents import tts as _tts
         from livekit.plugins import cartesia
@@ -449,11 +561,12 @@ def build_tts():
         if CARTESIA_VOICE:
             c_kwargs["voice"] = CARTESIA_VOICE
         fallback = _CartesiaNoEmotionTags(**c_kwargs)
+        targets.append(fallback)
         logger.info("TTS: Inworld (main) + Cartesia %s (fallback)", CARTESIA_MODEL)
-        return _tts.FallbackAdapter([primary, fallback])
+        return _tts.FallbackAdapter([primary, fallback]), targets
     except Exception as e:  # noqa: BLE001
         logger.warning("TTS fallback Cartesia non disponibile (%s); uso solo Inworld", e)
-        return primary
+        return primary, targets
 
 
 def build_llm():
@@ -507,7 +620,10 @@ async def entrypoint(ctx: JobContext) -> None:
     except json.JSONDecodeError:
         md = {}
     md["room_name"] = ctx.room.name
-    logger.info("odyra_web job room=%s", ctx.room.name)
+    # Lingua iniziale scelta dai bottoni IT/EN/ES del sito (passata dal widget nel
+    # metadata del job). In assenza: DEFAULT_LANG. Poi lo STT-multi adatta da solo.
+    initial_lang = _normalize_lang(md.get("lang", "")) or DEFAULT_LANG
+    logger.info("odyra_web job room=%s lang=%s", ctx.room.name, initial_lang)
 
     await ctx.connect()
 
@@ -521,15 +637,16 @@ async def entrypoint(ctx: JobContext) -> None:
     }
 
     vad = ctx.proc.userdata.get("vad") or _load_vad()
+    # keyterm è una feature Nova-3 monolingua: in "multi" la lasciamo cadere per
+    # non rischiare rifiuti dall'API Deepgram.
+    _stt_kwargs = dict(model=DEEPGRAM_MODEL, language=DEEPGRAM_LANGUAGE, numerals=True)
+    if DEEPGRAM_LANGUAGE.strip().lower() != "multi":
+        _stt_kwargs["keyterm"] = KEYTERMS
+    tts_engine, tts_targets = build_tts()
     _session_kwargs = dict(
-        stt=deepgram.STT(
-            model=DEEPGRAM_MODEL,
-            language=DEEPGRAM_LANGUAGE,
-            numerals=True,
-            keyterm=KEYTERMS,
-        ),
+        stt=deepgram.STT(**_stt_kwargs),
         llm=build_llm(),
-        tts=build_tts(),
+        tts=tts_engine,
         vad=vad,
         turn_detection=("vad" if TURN_DETECTION == "vad" else inference.TurnDetector()),
         min_endpointing_delay=MIN_ENDPOINTING_DELAY,
@@ -546,7 +663,9 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.warning("AgentSession: param anti-interruzione non supportati (%s); uso base", e)
         session = AgentSession(**_session_kwargs)
 
-    agent = OdyraWebAgent(md=md)
+    agent = OdyraWebAgent(md=md, tts_targets=tts_targets, initial_lang=initial_lang)
+    # Allinea subito il TTS alla lingua d'apertura (prima del saluto).
+    agent._apply_language(initial_lang, initial=True)
 
     def _touch(*_args) -> None:
         state["last_activity"] = loop.time()
@@ -607,7 +726,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.info("Silence timeout (%ss) → chiusura", SILENCE_TIMEOUT_S)
                 try:
                     await session.say(
-                        "Io resto qui — se ti serve altro riapri pure il microfono. A presto!",
+                        _localized(GOODBYE_SILENCE, agent._active_lang),
                         allow_interruptions=False,
                     )
                 except Exception:  # noqa: BLE001
@@ -621,8 +740,7 @@ async def entrypoint(ctx: JobContext) -> None:
             return
         try:
             await session.say(
-                "Devo salutarti per questa sessione — se vuoi continuare, "
-                "riavvia pure la conversazione dal widget. Grazie della chiacchierata!",
+                _localized(GOODBYE_MAX, agent._active_lang),
                 allow_interruptions=False,
             )
         except Exception:  # noqa: BLE001
@@ -699,7 +817,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     state["generating_reply"] = True
     try:
-        await session.say(FIRST_MESSAGE, allow_interruptions=True)
+        await session.say(_localized(GREETINGS, agent._active_lang), allow_interruptions=True)
     finally:
         state["generating_reply"] = False
 
