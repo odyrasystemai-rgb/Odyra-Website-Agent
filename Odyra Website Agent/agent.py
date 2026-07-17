@@ -60,6 +60,11 @@ from livekit.plugins import deepgram, inworld, openai, silero
 load_dotenv()
 logger = logging.getLogger("odyra_web")
 logging.basicConfig(level=logging.INFO)
+# Debug mirato del plugin voce: se lo streaming Inworld non emette audio, qui
+# compaiono i dettagli (handshake, errori, chiusure) del percorso live.
+if os.getenv("INWORLD_DEBUG", "1") == "1":
+    logging.getLogger("livekit.plugins.inworld").setLevel(logging.DEBUG)
+    logging.getLogger("livekit.agents.tts").setLevel(logging.DEBUG)
 
 # ───────────────────────── Identità agente ─────────────────────────
 
@@ -1031,8 +1036,19 @@ async def entrypoint(ctx: JobContext) -> None:
         return
 
     state["generating_reply"] = True
+    # Il saluto viene ripulito dai tag emotivi ("[happy]" ecc.): la sintesi REST
+    # con testo semplice risponde 200/audio, quindi mando a Inworld testo pulito
+    # per escludere che il markup blocchi lo streaming. Log dettagliato + timing
+    # + cattura eccezioni per vedere nei log SE e PERCHÉ lo say() non produce voce.
+    _greet_raw = _localized(GREETINGS, agent._active_lang)
+    _greet = _strip_emotion_tags(_greet_raw).strip() or _greet_raw
+    _t0 = loop.time()
+    logger.info("[GREET] lang=%s say(len=%d) %r", agent._active_lang, len(_greet), _greet[:90])
     try:
-        await session.say(_localized(GREETINGS, agent._active_lang), allow_interruptions=True)
+        await session.say(_greet, allow_interruptions=True)
+        logger.info("[GREET] say() OK in %.2fs", loop.time() - _t0)
+    except Exception as _ge:  # noqa: BLE001
+        logger.exception("[GREET] say() FALLITO dopo %.2fs: %r", loop.time() - _t0, _ge)
     finally:
         state["generating_reply"] = False
 
