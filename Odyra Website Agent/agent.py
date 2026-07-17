@@ -524,8 +524,14 @@ class OdyraWebAgent(Agent):
             node = _default.tts_node(self, _gated(), model_settings)
         else:
             node = super().tts_node(_gated(), model_settings)
+        # Conta i frame audio realmente prodotti: se >0 la voce ESCE dalla
+        # pipeline (problema a valle: pubblicazione/track/browser); se =0 il
+        # TTS non produce nulla (problema Inworld/sintesi).
+        _n = 0
         async for frame in node:
+            _n += 1
             yield frame
+        logger.info("[TTS_NODE] frame audio prodotti=%d lang=%s", _n, self._active_lang)
 
     # ── filler pattern (1:1 da qualify_master) ──
 
@@ -726,66 +732,6 @@ def prewarm(proc: JobProcess) -> None:
         INWORLD_DELIVERY_MODE,
         (os.getenv("INWORLD_API_KEY", "")[:6] + "…") if os.getenv("INWORLD_API_KEY") else "MISSING",
     )
-    # Self-test una-tantum: chiama l'API REST Inworld con (voice + api_key) reali
-    # e logga l'esito. 200+bytes = la voce sintetizza → il muto è altrove; 4xx =
-    # voce inesistente / chiave sbagliata / quota (la vera causa del muto).
-    if os.getenv("INWORLD_SELFTEST", "1") == "1":
-        try:
-            import urllib.request as _u, urllib.error as _ue, json as _j
-            _k = os.getenv("INWORLD_API_KEY", "")
-            _payload = _j.dumps(
-                {"text": "prova", "voiceId": INWORLD_VOICE, "modelId": INWORLD_MODEL}
-            ).encode()
-            _req = _u.Request(
-                "https://api.inworld.ai/tts/v1/voice",
-                data=_payload,
-                headers={"Authorization": "Basic " + _k, "Content-Type": "application/json"},
-            )
-            with _u.urlopen(_req, timeout=15) as _r:
-                _b = _r.read()
-                logger.info("[INWORLD SELFTEST] HTTP %s bytes=%s head=%r", _r.status, len(_b), _b[:80])
-        except _ue.HTTPError as _e:  # noqa: BLE001
-            logger.error("[INWORLD SELFTEST] HTTP %s body=%r", _e.code, _e.read()[:500])
-        except Exception as _e:  # noqa: BLE001
-            logger.error("[INWORLD SELFTEST] error: %r", _e)
-    # Prova lo STREAMING reale del plugin (il percorso live), con e senza
-    # delivery_mode, e conta i frame audio: frames=0 = quel percorso è muto.
-    if os.getenv("INWORLD_STREAMTEST", "1") == "1":
-        import asyncio as _asyncio
-
-        async def _probe(_kwargs: dict, _label: str) -> None:
-            _frames = 0
-            _err = None
-            try:
-                _tts = inworld.TTS(**_kwargs)
-                async for _ev in _tts.synthesize("prova di sintesi vocale"):
-                    if getattr(_ev, "frame", None) is not None:
-                        _frames += 1
-                try:
-                    await _tts.aclose()
-                except Exception:  # noqa: BLE001
-                    pass
-            except Exception as _e:  # noqa: BLE001
-                _err = repr(_e)
-            logger.info("[INWORLD STREAMTEST:%s] frames=%s err=%s", _label, _frames, _err)
-
-        async def _run_probes() -> None:
-            _base = dict(
-                model=INWORLD_MODEL,
-                voice=INWORLD_VOICE,
-                language=INWORLD_LANGUAGE,
-                speaking_rate=INWORLD_SPEAKING_RATE,
-            )
-            await _probe(dict(_base), "no_delivery")
-            if INWORLD_DELIVERY_MODE:
-                _wd = dict(_base)
-                _wd["delivery_mode"] = INWORLD_DELIVERY_MODE
-                await _probe(_wd, "with_delivery")
-
-        try:
-            _asyncio.run(_run_probes())
-        except Exception as _e:  # noqa: BLE001
-            logger.error("[INWORLD STREAMTEST] harness error: %r", _e)
     proc.userdata["vad"] = _load_vad()
 
 
