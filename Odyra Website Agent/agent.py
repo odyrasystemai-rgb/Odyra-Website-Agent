@@ -104,12 +104,16 @@ KEYTERMS = [
 ]
 
 # ───────────────────────── Avatar Tavus (step 5) ─────────────────────────
-# Attivo SOLO se tutte e tre le env sono presenti. Senza, il worker resta
-# voice-only con visualizer: nessun cambiamento di comportamento.
+# DISATTIVO di default: l'avatar fa passare l'audio dal lip-sync video e
+# aggiunge ~1-2s di latenza. Per riattivarlo basta AVATAR_ENABLED=true (e le
+# tre env Tavus presenti). Senza avatar il widget resta con il visualizer.
 
 TAVUS_REPLICA_ID = os.getenv("TAVUS_REPLICA_ID", "")
 TAVUS_PERSONA_ID = os.getenv("TAVUS_PERSONA_ID", "")
-AVATAR_ENABLED = bool(TAVUS_REPLICA_ID and TAVUS_PERSONA_ID and os.getenv("TAVUS_API_KEY"))
+_AVATAR_OPT_IN = os.getenv("AVATAR_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+AVATAR_ENABLED = _AVATAR_OPT_IN and bool(
+    TAVUS_REPLICA_ID and TAVUS_PERSONA_ID and os.getenv("TAVUS_API_KEY")
+)
 
 # ───────────────────────── Webhook / RAG ─────────────────────────
 
@@ -180,6 +184,13 @@ if DEFAULT_LANG not in SUPPORTED_LANGS:
 
 # Inworld tts-2 / Cartesia accettano il codice lingua breve BCP-47.
 _TTS_LANG_CODE = {c: c for c in SUPPORTED_LANGS}
+
+# Auto-switch lingua STABILIZZATO: quante rilevazioni consecutive della STESSA
+# nuova lingua servono prima di cambiare davvero il TTS. Serve a non farsi
+# ingannare da una singola frase mal-rilevata dallo STT-"multi" (es. una
+# battuta italiana scambiata per inglese), che faceva leggere l'italiano con
+# fonetica sbagliata a metà conversazione ("italiano strano").
+LANG_SWITCH_CONFIRMATIONS = max(1, int(os.getenv("LANG_SWITCH_CONFIRMATIONS", "2")))
 
 
 def _resolve_stt_language(initial_lang: str) -> str:
@@ -344,8 +355,8 @@ Solo parole che si possono pronunciare: niente simboli, elenchi, sigle sillabate
 Vietate: "certamente", "assolutamente", "perfetto", "nessun problema", e qualsiasi gergo tecnico da dietro le quinte (tool, query, database).
 Niente inglese da slide quando parli: mai dire ad alta voce "white label", "revenue share", "booking" e simili — la sintesi vocale li pronuncia male in mezzo a una frase italiana. Di' invece "a marchio tuo", "con il tuo brand", "quota sui ricavi", "prenotazioni": stesso significato, pronuncia pulita. Nomi propri (Odyra, WhatsApp, i nomi dei clienti) restano come sono.
 Le conferme variano sempre: "certo", "esatto", "guarda", "giusto" — mai la stessa due volte di fila.
-Tag emotivi prima della frase, due o tre a conversazione, mai da soli: [happy] per l'entusiasmo vero, [laughing] per le battute, [surprised] per una domanda che non ti aspettavi, [sigh] prima di qualcosa di più articolato. Mai [whispering].
-Se ti chiedono se sei un'intelligenza artificiale: [laughing] certo che lo sono, ed è proprio il bello — stai testando dal vivo quello che Odyra costruisce.
+Tag emotivi: usali con parsimonia, al massimo una volta ogni tanto e solo quando viene naturalissimo — nel dubbio, nessuno (il parlato pulito suona più naturale). Mai da soli, mai [whispering]. Quando servono: [happy] per l'entusiasmo vero, [laughing] per una battuta.
+Se ti chiedono se sei un'intelligenza artificiale: certo che lo sono, ed è proprio il bello — stai testando dal vivo quello che Odyra costruisce.
 
 ━━━ QUANDO LA CONVERSAZIONE MATURA ━━━
 Se senti che l'interesse è vero — parla della sua azienda, chiede come si parte, quanto costa, quanto ci vuole — proponi con naturalezza di lasciare un contatto, tipo "la cosa più semplice è che ci sentiamo direttamente, mi lasci un nome e un numero o una mail?". Raccoglili e usa richiedi_contatto. Se preferisce di no, nessun problema, resti disponibile senza insistere mai.
@@ -419,6 +430,9 @@ class OdyraWebAgent(Agent):
         # Multilingua: motori TTS da riallineare + lingua attiva.
         self._tts_targets = list(tts_targets or [])
         self._active_lang = _normalize_lang(initial_lang) or DEFAULT_LANG
+        # Debounce dell'auto-switch lingua (vedi _consider_language).
+        self._lang_pending: str | None = None
+        self._lang_pending_count = 0
 
     # ── Switch di lingua a runtime (STT rileva → TTS si riallinea) ──
 
@@ -435,6 +449,25 @@ class OdyraWebAgent(Agent):
                 logger.warning("TTS update_options(language=%s) fallito su %s: %s",
                                code, type(t).__name__, e)
         logger.info("[LANG] lingua attiva -> %s", lang)
+
+    def _consider_language(self, detected: str) -> None:
+        """Applica il cambio-lingua SOLO dopo N rilevazioni consecutive della
+        stessa nuova lingua (LANG_SWITCH_CONFIRMATIONS). Una singola rilevazione
+        sbagliata non sposta più la voce a metà conversazione."""
+        detected = _normalize_lang(detected)
+        if not detected or detected == self._active_lang:
+            self._lang_pending = None
+            self._lang_pending_count = 0
+            return
+        if detected == self._lang_pending:
+            self._lang_pending_count += 1
+        else:
+            self._lang_pending = detected
+            self._lang_pending_count = 1
+        if self._lang_pending_count >= LANG_SWITCH_CONFIRMATIONS:
+            self._apply_language(detected)
+            self._lang_pending = None
+            self._lang_pending_count = 0
 
     async def stt_node(self, audio, model_settings):
         """Intercetta la lingua rilevata da Deepgram (STT in 'multi') su ogni
@@ -453,7 +486,7 @@ class OdyraWebAgent(Agent):
                     if alts:
                         detected = _normalize_lang(getattr(alts[0], "language", "") or "")
                         if detected:
-                            self._apply_language(detected)
+                            self._consider_language(detected)
             except Exception:  # noqa: BLE001
                 pass
             yield ev
