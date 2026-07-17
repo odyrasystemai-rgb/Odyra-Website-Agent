@@ -86,7 +86,11 @@ INWORLD_LANGUAGE = os.getenv("INWORLD_LANGUAGE", "it")
 INWORLD_SPEAKING_RATE = float(os.getenv("INWORLD_SPEAKING_RATE", "1.1"))
 INWORLD_DELIVERY_MODE = os.getenv("INWORLD_DELIVERY_MODE", "CREATIVE")
 
-TTS_FALLBACK_ENABLED = os.getenv("TTS_FALLBACK_ENABLED", "true").lower() in ("1", "true", "yes")
+# Fallback Cartesia disattivato di default: il FallbackAdapter forzava la
+# sintesi NON-streaming di Inworld, che in questo worker dà "Connection error"
+# (mentre lo streaming WebSocket nativo si connette). Inworld raw = solo path
+# streaming = voce che esce. Riattivabile con TTS_FALLBACK_ENABLED=1.
+TTS_FALLBACK_ENABLED = os.getenv("TTS_FALLBACK_ENABLED", "false").lower() in ("1", "true", "yes")
 CARTESIA_MODEL = os.getenv("CARTESIA_MODEL", "sonic-3")
 CARTESIA_VOICE = os.getenv("CARTESIA_VOICE", "")
 CARTESIA_LANGUAGE = os.getenv("CARTESIA_LANGUAGE", "it")
@@ -1043,12 +1047,20 @@ async def entrypoint(ctx: JobContext) -> None:
     _greet_raw = _localized(GREETINGS, agent._active_lang)
     _greet = _strip_emotion_tags(_greet_raw).strip() or _greet_raw
     _t0 = loop.time()
-    logger.info("[GREET] lang=%s say(len=%d) %r", agent._active_lang, len(_greet), _greet[:90])
+    logger.info("[GREET] lang=%s generate_reply(len=%d) %r", agent._active_lang, len(_greet), _greet[:90])
     try:
-        await session.say(_greet, allow_interruptions=True)
-        logger.info("[GREET] say() OK in %.2fs", loop.time() - _t0)
+        # Percorso STREAMING (LLM→tts_node→WebSocket Inworld): è quello che si
+        # connette. Istruisco il modello a pronunciare ESATTAMENTE il saluto.
+        await session.generate_reply(
+            instructions=(
+                "Apri tu la conversazione. Pronuncia ESATTAMENTE questo saluto, "
+                "parola per parola, senza aggiungere né togliere nulla:\n"
+                f"«{_greet}»"
+            )
+        )
+        logger.info("[GREET] generate_reply OK in %.2fs", loop.time() - _t0)
     except Exception as _ge:  # noqa: BLE001
-        logger.exception("[GREET] say() FALLITO dopo %.2fs: %r", loop.time() - _t0, _ge)
+        logger.exception("[GREET] generate_reply FALLITO dopo %.2fs: %r", loop.time() - _t0, _ge)
     finally:
         state["generating_reply"] = False
 
