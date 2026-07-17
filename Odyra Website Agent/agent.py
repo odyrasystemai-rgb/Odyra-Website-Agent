@@ -62,7 +62,8 @@ logger = logging.getLogger("odyra_web")
 logging.basicConfig(level=logging.INFO)
 # Debug mirato del plugin voce: se lo streaming Inworld non emette audio, qui
 # compaiono i dettagli (handshake, errori, chiusure) del percorso live.
-if os.getenv("INWORLD_DEBUG", "1") == "1":
+# Spento di default in produzione; riattivabile con INWORLD_DEBUG=1.
+if os.getenv("INWORLD_DEBUG", "0") == "1":
     logging.getLogger("livekit.plugins.inworld").setLevel(logging.DEBUG)
     logging.getLogger("livekit.agents.tts").setLevel(logging.DEBUG)
 
