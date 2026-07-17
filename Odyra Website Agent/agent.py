@@ -139,10 +139,16 @@ SILENCE_TIMEOUT_S = _envf("SILENCE_TIMEOUT_S", 60.0)
 MAX_DURATION_S = _envf("MAX_DURATION_S", 480.0)
 STUCK_TIMEOUT_S = _envf("STUCK_TIMEOUT_S", 15.0)
 STUCK_GRACE_S = _envf("STUCK_GRACE_S", 3.0)
-# Endpointing accorciato per una risposta più scattante sul web (audio pulito).
-# Reversibile via env se dovesse tagliare la parola su frasi con pause lunghe.
-MIN_ENDPOINTING_DELAY = _envf("MIN_ENDPOINTING_DELAY", 0.4)
-MAX_ENDPOINTING_DELAY = _envf("MAX_ENDPOINTING_DELAY", 1.4)
+# Endpointing corto per una risposta ~scattante sul web (audio pulito): è la
+# leva principale sulla latenza domanda→risposta. Target ~800 ms percepiti.
+# Reversibile via env se dovesse tagliare la parola su frasi con pause lunghe
+# (in tal caso alza MAX_ENDPOINTING_DELAY a 1.0–1.2).
+MIN_ENDPOINTING_DELAY = _envf("MIN_ENDPOINTING_DELAY", 0.2)
+MAX_ENDPOINTING_DELAY = _envf("MAX_ENDPOINTING_DELAY", 0.8)
+# Preemptive generation: l'agente inizia a generare LLM+TTS appena ha la
+# trascrizione, PRIMA che l'endpointing confermi il fine-turno → nasconde il
+# tempo di primo token e primo chunk audio. Grosso guadagno di reattività.
+PREEMPTIVE_GENERATION = _envb("PREEMPTIVE_GENERATION", True)
 MIN_INTERRUPTION_DURATION = _envf("MIN_INTERRUPTION_DURATION", 0.6)
 MIN_INTERRUPTION_WORDS = int(_envf("MIN_INTERRUPTION_WORDS", 2))
 RESUME_FALSE_INTERRUPTION = _envb("RESUME_FALSE_INTERRUPTION", True)
@@ -728,15 +734,25 @@ async def entrypoint(ctx: JobContext) -> None:
         max_endpointing_delay=MAX_ENDPOINTING_DELAY,
         min_interruption_duration=MIN_INTERRUPTION_DURATION,
     )
-    _anti_interrupt = {"min_interruption_words": MIN_INTERRUPTION_WORDS}
+    # Extra opzionali (dipendono dalla versione di livekit-agents): reattività
+    # (preemptive_generation) + anti-interruzione. Se una versione non li accetta
+    # si ripiega sulla sessione base senza rompere nulla.
+    _optional = {"min_interruption_words": MIN_INTERRUPTION_WORDS}
+    if PREEMPTIVE_GENERATION:
+        _optional["preemptive_generation"] = True
     if RESUME_FALSE_INTERRUPTION:
-        _anti_interrupt["resume_false_interruption"] = True
-        _anti_interrupt["false_interruption_timeout"] = FALSE_INTERRUPTION_TIMEOUT_S
+        _optional["resume_false_interruption"] = True
+        _optional["false_interruption_timeout"] = FALSE_INTERRUPTION_TIMEOUT_S
     try:
-        session = AgentSession(**_session_kwargs, **_anti_interrupt)
+        session = AgentSession(**_session_kwargs, **_optional)
     except TypeError as e:  # noqa: BLE001
-        logger.warning("AgentSession: param anti-interruzione non supportati (%s); uso base", e)
-        session = AgentSession(**_session_kwargs)
+        logger.warning("AgentSession: alcuni param opzionali non supportati (%s); riprovo senza preemptive", e)
+        _optional.pop("preemptive_generation", None)
+        try:
+            session = AgentSession(**_session_kwargs, **_optional)
+        except TypeError as e2:  # noqa: BLE001
+            logger.warning("AgentSession: param opzionali non supportati (%s); uso base", e2)
+            session = AgentSession(**_session_kwargs)
 
     agent = OdyraWebAgent(md=md, tts_targets=tts_targets, initial_lang=initial_lang)
     # Allinea subito il TTS alla lingua d'apertura (prima del saluto).
