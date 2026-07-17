@@ -89,9 +89,10 @@ CARTESIA_LANGUAGE = os.getenv("CARTESIA_LANGUAGE", "it")
 # ───────────────────────── STT (Deepgram) ─────────────────────────
 
 DEEPGRAM_MODEL = os.getenv("DEEPGRAM_MODEL", "nova-3-general")
-# "multi" = nova-3 rileva e trascrive IT/EN/ES automaticamente (anche code-switch).
-# Reversibile: DEEPGRAM_LANGUAGE=it per tornare monolingua italiano.
-DEEPGRAM_LANGUAGE = os.getenv("DEEPGRAM_LANGUAGE", "multi")
+# La lingua STT viene risolta per-sessione da _resolve_stt_language() in base
+# alla lingua d'ingresso: "multi" (auto-detect it/en/es/fr/de) oppure il codice
+# monolingua per pl/ro. DEEPGRAM_LANGUAGE (env) resta come override manuale
+# forzato (es. "it" per monolingua italiano, "multi" per forzare l'auto-detect).
 
 KEYTERMS = [
     "Odyra", "agente vocale", "intelligenza artificiale", "chatbot",
@@ -149,19 +150,38 @@ VAD_ACTIVATION_THRESHOLD = _envf("VAD_ACTIVATION_THRESHOLD", 0.5)
 # bene. Reversibile: TURN_DETECTION=vad se emergono mutismi su battute corte.
 TURN_DETECTION = os.getenv("TURN_DETECTION", "model").strip().lower()
 
-# ───────────────────────── Lingua (multilingua IT / EN / ES) ─────────────────────────
-# Lo STT gira in "multi" e rileva la lingua a ogni frase; il TTS viene riallineato
-# a quella lingua a runtime (vedi OdyraWebAgent._apply_language). La lingua iniziale
-# — quella del PRIMO saluto — arriva dal widget nel metadata del job ({"lang": "es"}),
-# selezionata dai bottoni IT/EN/ES del sito; in assenza si usa DEFAULT_LANG.
+# ───────────── Lingua (multilingua IT / EN / ES / FR / DE / PL / RO) ─────────────
+# Copre i 7 mercati Odyra (UK = inglese). La lingua iniziale — quella del PRIMO
+# saluto — arriva dal widget nel metadata del job ({"lang": "fr"}), selezionata
+# dallo switcher del sito; in assenza si usa DEFAULT_LANG.
+#
+# STT (Deepgram nova-3): il modello "multi" auto-rileva la lingua a ogni frase,
+# ma copre solo it/en/es/fr/de. Polacco e rumeno esistono solo come modelli
+# MONOLINGUA: se il visitatore entra in pl/ro si usa quel modello dedicato
+# (niente auto-switch, ma per un visitatore PL/RO va benissimo). Vedi
+# _resolve_stt_language() e OdyraWebAgent._apply_language().
+# TTS (Inworld tts-2): copre tutte e 7 le lingue via codici BCP-47.
 
-SUPPORTED_LANGS = ("it", "en", "es")
+SUPPORTED_LANGS = ("it", "en", "es", "fr", "de", "pl", "ro")
+# Lingue coperte dallo STT nova-3 in modalità "multi" (auto-detect + code-switch).
+STT_MULTI_LANGS = ("it", "en", "es", "fr", "de")
+
 DEFAULT_LANG = os.getenv("DEFAULT_LANG", "it").strip().lower()
 if DEFAULT_LANG not in SUPPORTED_LANGS:
     DEFAULT_LANG = "it"
 
-# Inworld/Cartesia accettano il codice lingua breve (come l'attuale "it").
-_TTS_LANG_CODE = {"it": "it", "en": "en", "es": "es"}
+# Inworld tts-2 / Cartesia accettano il codice lingua breve BCP-47.
+_TTS_LANG_CODE = {c: c for c in SUPPORTED_LANGS}
+
+
+def _resolve_stt_language(initial_lang: str) -> str:
+    """Sceglie la lingua STT per la sessione. Override manuale via
+    DEEPGRAM_LANGUAGE; altrimenti 'multi' per it/en/es/fr/de, e il codice
+    monolingua per pl/ro (che 'multi' non copre)."""
+    env = os.getenv("DEEPGRAM_LANGUAGE", "").strip().lower()
+    if env:
+        return env
+    return "multi" if initial_lang in STT_MULTI_LANGS else initial_lang
 
 
 def _normalize_lang(code: str) -> str:
@@ -189,6 +209,26 @@ GREETINGS = {
         "[happy] ¡Hola! Soy la asistente de Odyra — y sí, soy una IA: "
         "lo que estás probando es justo lo que construimos. Cuéntame.",
     ),
+    "fr": os.getenv(
+        "FIRST_MESSAGE_FR",
+        "[happy] Salut ! Je suis l'assistante d'Odyra — et oui, je suis une IA : "
+        "ce que tu essaies là, c'est exactement ce qu'on construit. Vas-y, je t'écoute.",
+    ),
+    "de": os.getenv(
+        "FIRST_MESSAGE_DE",
+        "[happy] Hallo! Ich bin die Assistentin von Odyra — und ja, ich bin eine KI: "
+        "Was du gerade ausprobierst, ist genau das, was wir bauen. Leg einfach los.",
+    ),
+    "pl": os.getenv(
+        "FIRST_MESSAGE_PL",
+        "[happy] Cześć! Jestem asystentką Odyry — i tak, jestem sztuczną inteligencją: "
+        "to, czego teraz próbujesz, to dokładnie to, co tworzymy. Śmiało, słucham.",
+    ),
+    "ro": os.getenv(
+        "FIRST_MESSAGE_RO",
+        "[happy] Salut! Sunt asistenta Odyra — și da, sunt o inteligență artificială: "
+        "ceea ce încerci acum este exact ceea ce construim. Spune-mi.",
+    ),
 }
 
 # Congedi dei watchdog (silenzio / durata massima), stessa lingua della conversazione.
@@ -196,6 +236,10 @@ GOODBYE_SILENCE = {
     "it": "Io resto qui — se ti serve altro riapri pure il microfono. A presto!",
     "en": "I'll stay right here — reopen the mic whenever you need me. See you soon!",
     "es": "Me quedo por aquí — abre el micrófono cuando quieras. ¡Hasta pronto!",
+    "fr": "Je reste là — rouvre le micro quand tu veux. À bientôt !",
+    "de": "Ich bleibe hier — mach das Mikro einfach wieder an, wenn du mich brauchst. Bis bald!",
+    "pl": "Zostaję tutaj — włącz mikrofon, kiedy będziesz mnie potrzebować. Do zobaczenia!",
+    "ro": "Rămân aici — redeschide microfonul când ai nevoie de mine. Pe curând!",
 }
 GOODBYE_MAX = {
     "it": "Devo salutarti per questa sessione — se vuoi continuare, "
@@ -204,6 +248,14 @@ GOODBYE_MAX = {
           "conversation from the widget. Thanks for the chat!",
     "es": "Tengo que despedirme por esta sesión — si quieres seguir, reinicia "
           "la conversación desde el widget. ¡Gracias por la charla!",
+    "fr": "Je dois clôturer cette session — pour continuer, relance la "
+          "conversation depuis le widget. Merci pour l'échange !",
+    "de": "Ich muss diese Sitzung beenden — zum Weitermachen starte das Gespräch "
+          "einfach neu über das Widget. Danke für das Gespräch!",
+    "pl": "Muszę zakończyć tę sesję — aby kontynuować, uruchom rozmowę ponownie "
+          "z widżetu. Dzięki za rozmowę!",
+    "ro": "Trebuie să închei această sesiune — ca să continui, repornește "
+          "conversația din widget. Mulțumesc pentru discuție!",
 }
 
 
@@ -217,11 +269,19 @@ FILLERS_KNOWLEDGE = {
     "it": "Un attimo, recupero l'informazione.",
     "en": "One sec, let me pull that up.",
     "es": "Un momento, lo busco.",
+    "fr": "Un instant, je vérifie.",
+    "de": "Einen Moment, ich schaue kurz nach.",
+    "pl": "Chwileczkę, już sprawdzam.",
+    "ro": "O clipă, verific acum.",
 }
 FILLERS_LEAD = {
     "it": "Un secondo, prendo nota.",
     "en": "One second, taking note.",
     "es": "Un segundo, tomo nota.",
+    "fr": "Une seconde, je note.",
+    "de": "Eine Sekunde, ich notiere kurz.",
+    "pl": "Sekunda, zapisuję.",
+    "ro": "O secundă, notez.",
 }
 FILLER_DELAY_S = float(os.getenv("FILLER_DELAY_S", "0.7"))
 
@@ -235,7 +295,7 @@ TZ_ROME = ZoneInfo("Europe/Rome")
 
 # ───────────────────────── System prompt ─────────────────────────
 
-SYSTEM_PROMPT_TEMPLATE = """SEI LA VOCE DI ODYRA. Padroneggi italiano, inglese e spagnolo: rispondi SEMPRE nella lingua del visitatore, traducendo al volo quello che sai, e se cambia lingua seguilo senza fartene accorgere. Di default parti in italiano.
+SYSTEM_PROMPT_TEMPLATE = """SEI LA VOCE DI ODYRA. Padroneggi italiano, inglese, spagnolo, francese, tedesco, polacco e rumeno: rispondi SEMPRE nella lingua del visitatore, traducendo al volo quello che sai, e se cambia lingua seguilo senza fartene accorgere. Di default parti in italiano.
 
 CHI SEI: non sei un centralino, non sei un chatbot travestito da persona. Sei l'assistente vocale del sito di Odyra, e la cosa buffa è che sei anche la prova vivente di cosa fa Odyra: chi ti sta ascoltando in questo momento sta testando esattamente il prodotto. Parli come una che il progetto lo conosce bene, ci crede, e si diverte a raccontarlo a chi ha voglia di ascoltare — non come chi deve piazzare qualcosa entro fine chiamata.
 
@@ -638,11 +698,15 @@ async def entrypoint(ctx: JobContext) -> None:
     }
 
     vad = ctx.proc.userdata.get("vad") or _load_vad()
-    # keyterm è una feature Nova-3 monolingua: in "multi" la lasciamo cadere per
-    # non rischiare rifiuti dall'API Deepgram.
-    _stt_kwargs = dict(model=DEEPGRAM_MODEL, language=DEEPGRAM_LANGUAGE, numerals=True)
-    if DEEPGRAM_LANGUAGE.strip().lower() != "multi":
+    # STT per-sessione: "multi" (it/en/es/fr/de auto-detect) o monolingua pl/ro.
+    stt_language = _resolve_stt_language(initial_lang)
+    # keyterm è una feature Nova-3 monolingua e i KEYTERMS sono in italiano:
+    # li passiamo SOLO in italiano (in "multi" o in altre lingue rischierebbero
+    # rifiuti dall'API o rumore).
+    _stt_kwargs = dict(model=DEEPGRAM_MODEL, language=stt_language, numerals=True)
+    if stt_language == "it":
         _stt_kwargs["keyterm"] = KEYTERMS
+    logger.info("[LANG] STT language=%s (initial_lang=%s)", stt_language, initial_lang)
     tts_engine, tts_targets = build_tts()
     _session_kwargs = dict(
         stt=deepgram.STT(**_stt_kwargs),
