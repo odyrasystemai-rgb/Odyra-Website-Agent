@@ -1,12 +1,15 @@
-# Allinea le versioni a quelle dei worker in production (BOSS / qualify_master).
-# Se lì hai pinnato livekit-agents a una 1.6.x specifica, usa la stessa qui.
-livekit-agents>=1.6.1,<2.0
-livekit-plugins-deepgram
-livekit-plugins-openai
-livekit-plugins-anthropic
-livekit-plugins-inworld
-livekit-plugins-cartesia
-livekit-plugins-silero
-livekit-plugins-tavus
+# Versioni PINNATE a 1.6.1 per allinearsi ai worker in production (BOSS /
+# qualify_master), che girano su 1.6.1 e sintetizzano audio correttamente.
+# NB: senza pin, un rebuild aveva tirato su 1.6.5, e livekit-plugins-inworld
+# 1.6.5 apriva il context TTS ma non emetteva audio (agente muto). Mantieni
+# questi pin allineati a BOSS finché non verifichi una versione più recente.
+livekit-agents==1.6.1
+livekit-plugins-deepgram==1.6.1
+livekit-plugins-openai==1.6.1
+livekit-plugins-anthropic==1.6.1
+livekit-plugins-inworld==1.6.1
+livekit-plugins-cartesia==1.6.1
+livekit-plugins-silero==1.6.1
+livekit-plugins-tavus==1.6.1
 aiohttp
 python-dotenv
