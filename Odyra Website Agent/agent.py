@@ -701,6 +701,18 @@ def _load_vad():
 
 
 def prewarm(proc: JobProcess) -> None:
+    # Diagnostica config voce: stampa i valori RUNTIME (non i default del codice)
+    # così dai log di Railway si vede subito se INWORLD_VOICE punta a un clone
+    # inesistente/di un altro account (context creato ma zero audio = muto).
+    logger.info(
+        "[INWORLD CFG] model=%s voice=%r language=%s rate=%s delivery=%s api_key=%s",
+        INWORLD_MODEL,
+        INWORLD_VOICE,
+        INWORLD_LANGUAGE,
+        INWORLD_SPEAKING_RATE,
+        INWORLD_DELIVERY_MODE,
+        (os.getenv("INWORLD_API_KEY", "")[:6] + "…") if os.getenv("INWORLD_API_KEY") else "MISSING",
+    )
     proc.userdata["vad"] = _load_vad()
 
 
