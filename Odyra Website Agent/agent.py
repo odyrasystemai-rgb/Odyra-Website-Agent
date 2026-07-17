@@ -635,7 +635,11 @@ def _build_inworld_tts():
         language=INWORLD_LANGUAGE,
         speaking_rate=INWORLD_SPEAKING_RATE,
     )
-    if INWORLD_DELIVERY_MODE:
+    # delivery_mode disattivato di default: con "CREATIVE" lo streaming Inworld
+    # apriva il context ma non emetteva audio (agente muto), mentre la sintesi
+    # REST senza delivery_mode risponde 200 con audio. Riattivabile SOLO con un
+    # valore verificato valido via INWORLD_USE_DELIVERY_MODE=1.
+    if INWORLD_DELIVERY_MODE and os.getenv("INWORLD_USE_DELIVERY_MODE", "0") == "1":
         kwargs["delivery_mode"] = INWORLD_DELIVERY_MODE
     return inworld.TTS(**kwargs)
 
@@ -735,6 +739,44 @@ def prewarm(proc: JobProcess) -> None:
             logger.error("[INWORLD SELFTEST] HTTP %s body=%r", _e.code, _e.read()[:500])
         except Exception as _e:  # noqa: BLE001
             logger.error("[INWORLD SELFTEST] error: %r", _e)
+    # Prova lo STREAMING reale del plugin (il percorso live), con e senza
+    # delivery_mode, e conta i frame audio: frames=0 = quel percorso è muto.
+    if os.getenv("INWORLD_STREAMTEST", "1") == "1":
+        import asyncio as _asyncio
+
+        async def _probe(_kwargs: dict, _label: str) -> None:
+            _frames = 0
+            _err = None
+            try:
+                _tts = inworld.TTS(**_kwargs)
+                async for _ev in _tts.synthesize("prova di sintesi vocale"):
+                    if getattr(_ev, "frame", None) is not None:
+                        _frames += 1
+                try:
+                    await _tts.aclose()
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception as _e:  # noqa: BLE001
+                _err = repr(_e)
+            logger.info("[INWORLD STREAMTEST:%s] frames=%s err=%s", _label, _frames, _err)
+
+        async def _run_probes() -> None:
+            _base = dict(
+                model=INWORLD_MODEL,
+                voice=INWORLD_VOICE,
+                language=INWORLD_LANGUAGE,
+                speaking_rate=INWORLD_SPEAKING_RATE,
+            )
+            await _probe(dict(_base), "no_delivery")
+            if INWORLD_DELIVERY_MODE:
+                _wd = dict(_base)
+                _wd["delivery_mode"] = INWORLD_DELIVERY_MODE
+                await _probe(_wd, "with_delivery")
+
+        try:
+            _asyncio.run(_run_probes())
+        except Exception as _e:  # noqa: BLE001
+            logger.error("[INWORLD STREAMTEST] harness error: %r", _e)
     proc.userdata["vad"] = _load_vad()
 
 
