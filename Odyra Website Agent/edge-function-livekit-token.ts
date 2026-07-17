@@ -49,10 +49,11 @@ Deno.serve(async (req) => {
   const apiSecret = Deno.env.get("LIVEKIT_API_SECRET")!;
   const livekitUrl = Deno.env.get("LIVEKIT_URL")!;
 
-  // Lingua scelta dai bottoni IT/EN/ES del sito: la passiamo all'agente nel
-  // metadata del job così il PRIMO saluto parte già nella lingua giusta.
-  // Accettata via query (?lang=es) o body JSON ({"lang":"es"}); default "it".
-  const ALLOWED_LANGS = ["it", "en", "es"];
+  // Lingua scelta dallo switcher del sito: la passiamo all'agente nel metadata
+  // del job così il PRIMO saluto parte già nella lingua giusta. Accettata via
+  // query (?lang=fr) o body JSON ({"lang":"fr"}); default "it". Deve restare
+  // allineata a SUPPORTED_LANGS dell'agente (7 mercati: UK = "en").
+  const ALLOWED_LANGS = ["it", "en", "es", "fr", "de", "pl", "ro"];
   let lang = "";
   try {
     lang = (new URL(req.url).searchParams.get("lang") || "").toLowerCase();
