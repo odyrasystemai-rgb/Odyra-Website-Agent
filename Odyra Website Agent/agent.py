@@ -713,6 +713,28 @@ def prewarm(proc: JobProcess) -> None:
         INWORLD_DELIVERY_MODE,
         (os.getenv("INWORLD_API_KEY", "")[:6] + "…") if os.getenv("INWORLD_API_KEY") else "MISSING",
     )
+    # Self-test una-tantum: chiama l'API REST Inworld con (voice + api_key) reali
+    # e logga l'esito. 200+bytes = la voce sintetizza → il muto è altrove; 4xx =
+    # voce inesistente / chiave sbagliata / quota (la vera causa del muto).
+    if os.getenv("INWORLD_SELFTEST", "1") == "1":
+        try:
+            import urllib.request as _u, urllib.error as _ue, json as _j
+            _k = os.getenv("INWORLD_API_KEY", "")
+            _payload = _j.dumps(
+                {"text": "prova", "voiceId": INWORLD_VOICE, "modelId": INWORLD_MODEL}
+            ).encode()
+            _req = _u.Request(
+                "https://api.inworld.ai/tts/v1/voice",
+                data=_payload,
+                headers={"Authorization": "Basic " + _k, "Content-Type": "application/json"},
+            )
+            with _u.urlopen(_req, timeout=15) as _r:
+                _b = _r.read()
+                logger.info("[INWORLD SELFTEST] HTTP %s bytes=%s head=%r", _r.status, len(_b), _b[:80])
+        except _ue.HTTPError as _e:  # noqa: BLE001
+            logger.error("[INWORLD SELFTEST] HTTP %s body=%r", _e.code, _e.read()[:500])
+        except Exception as _e:  # noqa: BLE001
+            logger.error("[INWORLD SELFTEST] error: %r", _e)
     proc.userdata["vad"] = _load_vad()
 
 
