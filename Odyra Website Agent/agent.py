@@ -153,12 +153,12 @@ SILENCE_TIMEOUT_S = _envf("SILENCE_TIMEOUT_S", 60.0)
 MAX_DURATION_S = _envf("MAX_DURATION_S", 480.0)
 STUCK_TIMEOUT_S = _envf("STUCK_TIMEOUT_S", 15.0)
 STUCK_GRACE_S = _envf("STUCK_GRACE_S", 3.0)
-# Endpointing corto per una risposta ~scattante sul web (audio pulito): è la
-# leva principale sulla latenza domanda→risposta. Target ~800 ms percepiti.
-# Reversibile via env se dovesse tagliare la parola su frasi con pause lunghe
-# (in tal caso alza MAX_ENDPOINTING_DELAY a 1.0–1.2).
-MIN_ENDPOINTING_DELAY = _envf("MIN_ENDPOINTING_DELAY", 0.2)
-MAX_ENDPOINTING_DELAY = _envf("MAX_ENDPOINTING_DELAY", 0.8)
+# Endpointing allineato ai worker BOSS/qualify_master: la reattività vera la dà
+# il TurnDetector (predice il fine-turno) + preemptive_generation, non lo
+# starving dell'endpointing. Un MAX troppo basso (0.8) tagliava la parola su
+# pause naturali → suonava innaturale. 0.45/2.0 = snello E non tronca.
+MIN_ENDPOINTING_DELAY = _envf("MIN_ENDPOINTING_DELAY", 0.45)
+MAX_ENDPOINTING_DELAY = _envf("MAX_ENDPOINTING_DELAY", 2.0)
 # Preemptive generation: l'agente inizia a generare LLM+TTS appena ha la
 # trascrizione, PRIMA che l'endpointing confermi il fine-turno → nasconde il
 # tempo di primo token e primo chunk audio. Grosso guadagno di reattività.
@@ -651,11 +651,12 @@ def _build_inworld_tts():
         language=INWORLD_LANGUAGE,
         speaking_rate=INWORLD_SPEAKING_RATE,
     )
-    # delivery_mode disattivato di default: con "CREATIVE" lo streaming Inworld
-    # apriva il context ma non emetteva audio (agente muto), mentre la sintesi
-    # REST senza delivery_mode risponde 200 con audio. Riattivabile SOLO con un
-    # valore verificato valido via INWORLD_USE_DELIVERY_MODE=1.
-    if INWORLD_DELIVERY_MODE and os.getenv("INWORLD_USE_DELIVERY_MODE", "0") == "1":
+    # delivery_mode=CREATIVE come nei worker BOSS/qualify_master: rende la voce
+    # più espressiva/naturale (interpreta i tag emotivi). Il muto di prima NON era
+    # colpa sua (era lo sblocco audio del browser + il FallbackAdapter non-stream);
+    # ora con Inworld raw in streaming va passato. Disattivabile con
+    # INWORLD_DELIVERY_MODE="" se mai servisse.
+    if INWORLD_DELIVERY_MODE:
         kwargs["delivery_mode"] = INWORLD_DELIVERY_MODE
     return inworld.TTS(**kwargs)
 
@@ -987,27 +988,28 @@ async def entrypoint(ctx: JobContext) -> None:
         return
 
     state["generating_reply"] = True
-    # Il saluto viene ripulito dai tag emotivi ("[happy]" ecc.): la sintesi REST
-    # con testo semplice risponde 200/audio, quindi mando a Inworld testo pulito
-    # per escludere che il markup blocchi lo streaming. Log dettagliato + timing
-    # + cattura eccezioni per vedere nei log SE e PERCHÉ lo say() non produce voce.
-    _greet_raw = _localized(GREETINGS, agent._active_lang)
-    _greet = _strip_emotion_tags(_greet_raw).strip() or _greet_raw
+    # Apertura = un solo session.say() FISSO (pattern BOSS / qualify_master): la
+    # frase è pronta, niente giro LLM → parte SUBITO (generate_reply aggiungeva
+    # secondi di latenza sul saluto). Mantengo il tag emotivo ("[happy]"): con
+    # delivery_mode=CREATIVE Inworld lo interpreta e la voce suona più naturale.
+    # Se per qualsiasi motivo say() fallisce, ripiego su generate_reply.
+    _greet = _localized(GREETINGS, agent._active_lang)
     _t0 = loop.time()
-    logger.info("[GREET] lang=%s generate_reply(len=%d) %r", agent._active_lang, len(_greet), _greet[:90])
+    logger.info("[GREET] lang=%s say(len=%d)", agent._active_lang, len(_greet))
     try:
-        # Percorso STREAMING (LLM→tts_node→WebSocket Inworld): è quello che si
-        # connette. Istruisco il modello a pronunciare ESATTAMENTE il saluto.
-        await session.generate_reply(
-            instructions=(
-                "Apri tu la conversazione. Pronuncia ESATTAMENTE questo saluto, "
-                "parola per parola, senza aggiungere né togliere nulla:\n"
-                f"«{_greet}»"
-            )
-        )
-        logger.info("[GREET] generate_reply OK in %.2fs", loop.time() - _t0)
+        await session.say(_greet, allow_interruptions=True)
+        logger.info("[GREET] say() OK in %.2fs", loop.time() - _t0)
     except Exception as _ge:  # noqa: BLE001
-        logger.exception("[GREET] generate_reply FALLITO dopo %.2fs: %r", loop.time() - _t0, _ge)
+        logger.warning("[GREET] say() fallito (%r) → fallback generate_reply", _ge)
+        try:
+            await session.generate_reply(
+                instructions=(
+                    "Apri tu la conversazione salutando il visitatore, dicendo "
+                    f"ESATTAMENTE: «{_strip_emotion_tags(_greet).strip()}»"
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[GREET] anche generate_reply fallito")
     finally:
         state["generating_reply"] = False
 
